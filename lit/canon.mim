@@ -1,0 +1,46 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin layout;
+
+// Axe canonicalization as normalization: D0 drops the unit-extent iter, D1 merges (4, 8) and (8, 1).
+// CHECK-DAG: lam extern canon (): %layout.Layout (32, 1) =
+// CHECK-DAG: %layout.lt (1, 0, 0) ((32, 1, %layout.axis.mem), (), ());
+lam extern canon (): %layout.Layout (32, 1) =
+    %layout.lt @(3, 0, 0) (((4, 8, %layout.axis.mem), (1, 99, %layout.axis.mem), (8, 1, %layout.axis.mem)), (), ());
+
+// A different spelling of the same layout is hash-consed to the identical canonical def
+// (the second occurrence of the very same body line).
+// CHECK-DAG: lam extern same (): %layout.Layout (32, 1) =
+// CHECK-DAG: %layout.lt (1, 0, 0) ((32, 1, %layout.axis.mem), (), ());
+lam extern same (): %layout.Layout (32, 1) =
+    %layout.lt @(2, 0, 0) (((2, 16, %layout.axis.mem), (16, 1, %layout.axis.mem)), (), ());
+
+// C0 drops the unit replica, C2 merges the saturated pair (2, 1) and (4, 2) into (8, 1);
+// same-axis offset terms are summed: 3 + 4 = 7.
+// CHECK-DAG: lam extern replicas (): %layout.Layout (1, 8) =
+// CHECK-DAG: %layout.lt (0, 1, 1) ((), (8, 1, %layout.axis.lane), (7, %layout.axis.mem));
+lam extern replicas (): %layout.Layout (1, 8) =
+    %layout.lt @(0, 3, 2) ((),
+                           ((2, 1, %layout.axis.lane), (1, 5, %layout.axis.warp), (4, 2, %layout.axis.lane)),
+                           ((3, %layout.axis.mem), (4, %layout.axis.mem)));
+
+// Sugar normalizes to canonical constructors.
+// CHECK-DAG: lam extern loc (): %layout.Layout (8, 1) =
+// CHECK-DAG: %layout.lt (1, 0, 0) ((8, 1, %layout.axis.reg), (), ());
+// CHECK-DAG: lam extern spat (): %layout.Layout (32, 1) =
+// CHECK-DAG: %layout.lt (1, 0, 0) ((32, 1, %layout.axis.lane), (), ());
+// CHECK-DAG: lam extern rm (): %layout.Layout (12, 1) =
+// CHECK-DAG: %layout.lt (1, 0, 0) ((12, 1, %layout.axis.mem), (), ());
+// CHECK-DAG: lam extern bc (): %layout.Layout (1, 4) =
+// CHECK-DAG: %layout.lt (0, 1, 0) ((), (4, 1, %layout.axis.lane), ());
+lam extern loc  (): %layout.Layout (8, 1)  = %layout.local 8;
+lam extern spat (): %layout.Layout (32, 1) = %layout.spatial 32;
+lam extern rm   (): %layout.Layout (12, 1) = %layout.row_major (3, 4, %layout.axis.mem);
+lam extern bc   (): %layout.Layout (1, 4)  = %layout.bcast (4, %layout.axis.lane);
+
+// Coordinates canonicalize, too: merge same-axis terms, drop zeros, sort by axis.
+// CHECK-DAG: lam extern crd (): %layout.Coord =
+// CHECK-DAG: %layout.coord 2 ((3, %layout.axis.lane), (9, %layout.axis.mem));
+lam extern crd (): %layout.Coord =
+    %layout.coord @4 ((4, %layout.axis.mem), (3, %layout.axis.lane), (0, %layout.axis.warp), (5, %layout.axis.mem));

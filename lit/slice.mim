@@ -1,0 +1,38 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin layout;
+
+// The Axe paper example: L = (2 8 3 8; 192 8 64 1)@mem viewed as (16, 24),
+// region begin (0, 8), extent (8, 16) ↦ (8 2 8; 8 64 1)@mem + 64@mem.
+// CHECK-DAG: lam extern axe (): %layout.Layout (128, 1) =
+// CHECK-DAG: %layout.lt (3, 0, 1) (((8, 8, %layout.axis.mem), (2, 64, %layout.axis.mem), (8, 1, %layout.axis.mem)), (), (64, %layout.axis.mem));
+lam extern axe (): %layout.Layout (128, 1) =
+    %layout.slice (%layout.lt @(4, 0, 0) (((2, 192, %layout.axis.mem), (8, 8, %layout.axis.mem),
+                                           (3, 64, %layout.axis.mem), (8, 1, %layout.axis.mem)), (), ()),
+                   (16, 24), (0, 8), (8, 16));
+
+// Slicing the full region is the identity.
+// CHECK-DAG: lam extern full (): %layout.Layout (12, 1) =
+// CHECK-DAG: %layout.lt (1, 0, 0) ((12, 1, %layout.axis.mem), (), ());
+lam extern full (): %layout.Layout (12, 1) =
+    %layout.slice (%layout.row_major (3, 4, %layout.axis.mem), (3, 4), (0, 0), (3, 4));
+
+// A column slice of a row-major matrix: columns 1..2 of a 4×4 ↦ (4 2; 4 1) + 1, i.e. the
+// grouping splits the fused (16, 1) iter and the region corner moves into the offset.
+// CHECK-DAG: lam extern cols (): %layout.Layout (8, 1) =
+// CHECK-DAG: %layout.lt (2, 0, 1) (((4, 4, %layout.axis.mem), (2, 1, %layout.axis.mem)), (), (1, %layout.axis.mem));
+lam extern cols (): %layout.Layout (8, 1) =
+    %layout.slice (%layout.row_major (4, 4, %layout.axis.mem), (4, 4), (0, 1), (4, 2));
+
+// The span of the paper layout along mem: 1 + 192 + 56 + 128 + 7 = 384; along an absent axis: 1.
+// CHECK-DAG: lam extern sp (): Nat =
+// CHECK-DAG: 384;
+// CHECK-DAG: lam extern sp_reg (): Nat =
+// CHECK-DAG: 1;
+lam extern sp (): Nat =
+    %layout.span (%layout.lt @(4, 0, 0) (((2, 192, %layout.axis.mem), (8, 8, %layout.axis.mem),
+                                          (3, 64, %layout.axis.mem), (8, 1, %layout.axis.mem)), (), ()),
+                  %layout.axis.mem);
+lam extern sp_reg (): Nat =
+    %layout.span (%layout.row_major (4, 4, %layout.axis.mem), %layout.axis.reg);

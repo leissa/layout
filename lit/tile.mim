@@ -1,0 +1,40 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin layout;
+
+// Two contiguous row-major layouts tile to one contiguous layout:
+// a = (2 3; 3 1), b = (8 8; 8 1); a's strides scale by span (b) = 64 and everything fuses.
+// CHECK-DAG: lam extern fuse (): %layout.Layout (384, 1) =
+// CHECK-DAG: %layout.lt (1, 0, 0) ((384, 1, %layout.axis.mem), (), ());
+lam extern fuse (): %layout.Layout (384, 1) =
+    %layout.tile (%layout.lt @(2, 0, 0) (((2, 3, %layout.axis.mem), (3, 1, %layout.axis.mem)), (), ()),
+                  %layout.lt @(2, 0, 0) (((8, 8, %layout.axis.mem), (8, 1, %layout.axis.mem)), (), ()));
+
+// A gapped outer layout does not fuse: (4; 2)@mem over (2; 1)@mem keeps the stride-4 tile placement.
+// CHECK-DAG: lam extern gapped (): %layout.Layout (8, 1) =
+// CHECK-DAG: %layout.lt (2, 0, 0) (((4, 4, %layout.axis.mem), (2, 1, %layout.axis.mem)), (), ());
+lam extern gapped (): %layout.Layout (8, 1) =
+    %layout.tile (%layout.lt @(1, 0, 0) ((4, 2, %layout.axis.mem), (), ()),
+                  %layout.lt @(1, 0, 0) ((2, 1, %layout.axis.mem), (), ()));
+
+// Mixed axes: 2 warps ⊗ 32 lanes ⊗ 4 registers; spans on distinct axes are 1, so nothing rescales.
+// (The domain size 256 prints as i8, i.e. 2⁸.)
+// CHECK-DAG: lam extern blocked (): %layout.Layout (i8, 1) =
+// CHECK-DAG: %layout.lt (3, 0, 0) (((2, 1, %layout.axis.warp), (32, 1, %layout.axis.lane), (4, 1, %layout.axis.reg)), (), ());
+lam extern blocked (): %layout.Layout (256, 1) =
+    %layout.tile (%layout.lt @(1, 0, 0) ((2, 1, %layout.axis.warp), (), ()),
+                  %layout.tile (%layout.spatial 32, %layout.local 4));
+
+// Replicas participate: broadcasting a lane-layout over 2 warps keeps the shard and
+// multiplies the replication factor into the type.
+// CHECK-DAG: lam extern brep (): %layout.Layout (4, 2) =
+// CHECK-DAG: %layout.lt (1, 1, 0) ((4, 1, %layout.axis.lane), (2, 1, %layout.axis.warp), ());
+lam extern brep (): %layout.Layout (4, 2) =
+    %layout.tile (%layout.bcast (2, %layout.axis.warp), %layout.spatial 4);
+
+// A symbolic layout stays stuck: no normalization fires on variables.
+// CHECK-DAG: lam extern sym (l_{{[0-9]+}}: %layout.Layout (4, 1)): %layout.Layout (16, 1) =
+// CHECK-DAG: %layout.tile (4, 1, 4, 1) (l_{{[0-9]+}}, %layout.lt (1, 0, 0) ((4, 1, %layout.axis.reg), (), ()));
+lam extern sym (l: %layout.Layout (4, 1)): %layout.Layout (16, 1) =
+    %layout.tile (l, %layout.local 4);

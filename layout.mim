@@ -2,14 +2,159 @@
 ///
 /// @see mim::plug::layout
 ///
-/// A minimal layout plugin.
+/// A prototype of a *tensor layout algebra*.
+/// A layout describes how the elements of a logical tensor are placed onto named hardware resources (registers, lanes, warps, memory, devices, ...).
+///
+/// The formal core follows the Axe layout model (Hou et al., "Axe: A Simple Unified Layout Abstraction for Machine Learning Compilers"):
+/// a layout is a triple `(D, R, O)` over a free module of *named axes* and maps a logical index to a *set* of coordinates:
+/// * `D` (shard): an ordered list of *iters* `(extent, stride, axis)` — a generalized, multi-axis shape/stride,
+/// * `R` (replica): a multiset of iters that is enumerated *independently* of the logical index — replication/broadcast,
+/// * `O` (offset): a fixed coordinate added to every result — base placement.
+///
+/// Formally, `l (x) = { d (x) + r + O | r ∈ R }` where `d` unflattens `x` lexicographically through the `D`-iters (first iter is most significant) and each iter contributes `digit·stride` on its axis.
+///
+/// Axe's rewrite rules yield a *canonical form* (unique normal form ⇒ decidable layout equality), which maps directly onto MimIR normalizers:
+/// canonical layouts are hash-consed to the same `Def`.
+///
+/// Deliberate prototype simplifications:
+/// * Strides and offsets are `Nat`s, i.e. non-negative — Axe's sign-normalization rule (C1) is moot.
+/// * Replicas are assumed to satisfy Axe's *gap condition* (no aliasing); the aliasing-absorption part of rule C2 is not applied.
+/// * `%%layout.tile` has rank-1 (flat-domain) Kronecker semantics; grouped multi-dimensional tiling is future work.
+/// * All normalizers only fire on fully literal layouts; symbolic layouts simply stay stuck.
 ///
 /// [TOC]
 ///
+/// ## Dependencies
+///
+plugin core;
+///
+/// ## Types
+///
+/// ### %%layout.Axis
+///
+/// A named hardware axis.
+/// This is an *open* set: this plugin predeclares the common intra-GPU axes plus a generic memory and device axis, and other plugins may declare more, e.g. `axm %%npu.axis(P, F): %%layout.Axis;`.
+///
+axm %layout.Axis: *;
+axm %layout.axis(reg, lane, warp, wgrp, mem, dev): %layout.Axis;
+///
+/// ### %%layout.Iter
+///
+/// One strided access on one named axis: `x ↦ (x·stride)@axis` for `x ∈ [0, extent)`.
+///
+let %layout.Iter = [extent: Nat, stride: Nat, axis: %layout.Axis];
+///
+/// ### %%layout.Coord
+///
+/// A point of the coordinate module: a formal sum `Σ cᵢ@aᵢ` over named axes.
+/// `normalize_coord` merges same-axis terms, drops zero terms, and sorts by axis, so equal coordinates are hash-consed.
+///
+axm %layout.Coord: *;
+axm %layout.coord: {n: Nat} → «n; [Nat, %layout.Axis]» → %layout.Coord, normalize_coord;
+///
+/// ### %%layout.Layout
+///
+/// The layout type, indexed by its domain size `E` (logical indices `[0, E)`) and its replication factor `R` (each index maps to `R` coordinates).
+///
+axm %layout.Layout: [E R: Nat] → *;
+
+/// ### %%layout.prod / %%layout.dom
+///
+/// The product of a shape vector / of an iter list's extents.
+/// These are axioms (not `lam`s over `%%vec.fold`) on purpose:
+/// `«1; T»` normalizes to `T`, so a generic fold cannot tell a 1-iter list from the iter's own components.
+/// Their normalizers take `n` from the explicit first argument and always reduce to a `%%core.nat.mul` chain, even for symbolic extents.
+///
+axm %layout.prod: [n: Nat] → «n; Nat» → Nat, normalize_prod;
+axm %layout.dom:  [n: Nat] → «n; %layout.Iter» → Nat, normalize_dom;
+///
+/// ## Constructor
+///
+/// ### %%layout.lt
+///
+/// The one and only layout constructor: `%%layout.lt (d, r, o)` builds the layout `(D, R, O)`.
+///
+/// `normalize_lt` canonicalizes literal layouts with Axe's rewrite rules:
+/// * D0: drop unit-extent shard iters,
+/// * D1: merge adjacent same-axis shard iters when `strideᵢ = extentᵢ₊₁ · strideᵢ₊₁`,
+/// * C0: drop unit-extent replica iters,
+/// * C2: merge saturated same-axis replicas (`stride_j = extentᵢ · strideᵢ`),
+/// and sorts replicas and offset terms into a deterministic order.
+/// All rules preserve the extent products, so the (literal) `%%layout.Layout` indices are unaffected.
+///
+axm %layout.lt: {nd nr no: Nat}
+              → [d: «nd; %layout.Iter», r: «nr; %layout.Iter», o: «no; [Nat, %layout.Axis]»]
+              → %layout.Layout (%layout.dom nd d, %layout.dom nr r), normalize_lt;
+///
 /// ## Operations
 ///
-/// ### %%layout.const_idx
+/// ### %%layout.tile
 ///
-/// The constant `42`, evaluated by a normalizer.
+/// Kronecker/tile product `a ⊗ b` on flat domains: `b` places elements *within* a tile, `a` places the tiles, with `a`'s contribution scaled by `b`'s axis-wise span.
+/// For `x = x_a · E_b + x_b`: `(a ⊗ b) (x) = a (x_a) ⊙ span (b) + b (x_b)` (`⊙` = axis-wise product).
+/// Domain sizes and replication factors multiply.
 ///
-axm %layout.const_idx: [n: Nat] → Idx n, normalize_const;
+axm %layout.tile: {Ea Ra Eb Rb: Nat}
+                → [a: %layout.Layout (Ea, Ra), b: %layout.Layout (Eb, Rb)]
+                → %layout.Layout (%core.nat.mul (Ea, Eb), %core.nat.mul (Ra, Rb)), normalize_tile;
+///
+/// ### %%layout.untile
+///
+/// Exact division, the partial inverse of %%layout.tile: if `a = c ⊗ b`, then `%%layout.untile (a, b) = c`.
+/// Stays stuck if `b` does not exactly divide `a`.
+///
+axm %layout.untile: {E R Eb Rb: Nat}
+                  → [a: %layout.Layout (E, R), b: %layout.Layout (Eb, Rb)]
+                  → %layout.Layout (%core.nat.div (E, Eb), %core.nat.div (R, Rb)), normalize_untile;
+///
+/// ### %%layout.slice
+///
+/// Restricts `l` to the axis-aligned region `[b, b+t)` of the `rk`-dimensional row-major view `s` of its domain (`Πs = E`).
+/// The result maps `[0, Πt)` and inherits `l`'s replicas; the region's corner moves into the offset.
+/// Stays stuck unless `l`'s shard iters admit a compatible grouping (Axe's group-by-shape) and the region is a contiguous digit range per dimension.
+///
+axm %layout.slice: {E R: Nat, rk: Nat}
+                 → [l: %layout.Layout (E, R), s b t: «rk; Nat»]
+                 → %layout.Layout (%layout.prod rk t, R), normalize_slice;
+///
+/// ### %%layout.span
+///
+/// The axis-wise span (Axe Lemma C.1): the extent of the layout's footprint along one axis,
+/// `span_a (l) = 1 + Σ_{(e, s, a) ∈ D ∪ R} s·(e − 1)`.
+///
+axm %layout.span: {E R: Nat} → [l: %layout.Layout (E, R), a: %layout.Axis] → Nat, normalize_span;
+///
+/// ### %%layout.eval
+///
+/// The layout's semantics: all `R` coordinates of logical index `x`, i.e. `‹d (x) + r + O | r ∈ R›` in the (canonical) lexicographic order of the replica iters.
+///
+axm %layout.eval: {E R: Nat} → [l: %layout.Layout (E, R), x: Idx E] → «R; %layout.Coord», normalize_eval;
+///
+/// ## Sugar
+///
+/// Convenience constructors in the spirit of Tilus (`local`/`spatial`) and NumPy (`row_major`).
+///
+/// All `n` elements contiguous in one thread's registers.
+/// Note: `«1; T»` normalizes to `T`, so a 1-iter shard is the iter itself.
+lam %layout.local (n: Nat): %layout.Layout (n, 1) =
+    %layout.lt @(1, 0, 0) ((n, 1, %layout.axis.reg), (), ());
+/// One element per lane across `n` lanes.
+lam %layout.spatial (n: Nat): %layout.Layout (n, 1) =
+    %layout.lt @(1, 0, 0) ((n, 1, %layout.axis.lane), (), ());
+/// Replicate a single element `n` times along axis `a`.
+lam %layout.bcast (n: Nat, a: %layout.Axis): %layout.Layout (1, n) =
+    %layout.lt @(0, 1, 0) ((), (n, 1, a), ());
+
+/// Row-major (C-order) 2-dimensional layout of shape `(h, w)` on a single axis `a`.
+/// A rank-generic version needs symbolic layout algebra and is future work.
+lam %layout.row_major (h w: Nat, a: %layout.Axis): %layout.Layout (%core.nat.mul (h, w), 1) =
+    %layout.lt @(2, 0, 0) (((h, w, a), (w, 1, a)), (), ());
+///
+/// ## Future Work
+///
+/// * An 𝔽₂/XOR *swizzle* node composed on top of `(D, R, O)` for power-of-two bank-conflict and `ldmatrix` problems (Zhou et al., "Linear Layouts").
+/// * Iter-*intersection* matching for collective instruction selection (Axe §3.4).
+/// * Hexcute-style layout-constraint solving (`f ∘ p⁻¹ = g ∘ q⁻¹`) as a `%%compile.Phase` once layouts attach to tensor operations.
+/// * Integration with the `tensor` plugin: attach a `%%layout.Layout` to buffers / `map_reduce` and lower access maps through the layout via `%%affine.*`.
+/// * Signed strides/offsets (restoring Axe rule C1) and symbolic (non-literal) layout algebra.
+/// * Grouped multi-dimensional %%layout.tile (Axe Algorithm 2 with shapes) and general (non-contiguous) slicing.

@@ -1,0 +1,28 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin layout;
+
+// Exact division: a = ((2, 128), (64, 1))@mem, b = (64, 1)@mem; peeling b and un-scaling by
+// span (b) = 64 recovers the gapped outer layout c = (2, 2)@mem (a's tiles sit 2 tile-spans apart).
+// CHECK-DAG: lam extern gapped (): %layout.Layout (2, 1) =
+// CHECK-DAG: %layout.lt (1, 0, 0) ((2, 2, %layout.axis.mem), (), ());
+lam extern gapped (): %layout.Layout (2, 1) =
+    %layout.untile (%layout.lt @(2, 0, 0) (((2, 128, %layout.axis.mem), (64, 1, %layout.axis.mem)), (), ()),
+                    %layout.lt @(1, 0, 0) ((64, 1, %layout.axis.mem), (), ()));
+
+// Roundtrip: untile (tile (a, b), b) ≡ a. a's canonical form is (6, 1)@mem plus a warp replica,
+// the tile product fuses everything to (48, 1), and division splits it back.
+// CHECK-DAG: lam extern round (): %layout.Layout (6, 2) =
+// CHECK-DAG: %layout.lt (1, 1, 0) ((6, 1, %layout.axis.mem), (2, 1, %layout.axis.warp), ());
+lam extern round (): %layout.Layout (6, 2) =
+    let a = %layout.lt @(2, 1, 0) (((2, 3, %layout.axis.mem), (3, 1, %layout.axis.mem)), (2, 1, %layout.axis.warp), ());
+    let b = %layout.lt @(1, 0, 0) ((8, 1, %layout.axis.mem), (), ());
+    %layout.untile (%layout.tile (a, b), b);
+
+// Non-divisible: b's stride does not match a's minor iter, so the application stays stuck.
+// CHECK-DAG: lam extern stuck (): %layout.Layout (4, 1) =
+// CHECK-DAG: %layout.untile (8, 1, 2, 1) (%layout.lt (1, 0, 0) ((8, 3, %layout.axis.mem), (), ()), %layout.lt (1, 0, 0) ((2, 1, %layout.axis.mem), (), ()));
+lam extern stuck (): %layout.Layout (4, 1) =
+    %layout.untile (%layout.lt @(1, 0, 0) ((8, 3, %layout.axis.mem), (), ()),
+                    %layout.lt @(1, 0, 0) ((2, 1, %layout.axis.mem), (), ()));
