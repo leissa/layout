@@ -48,19 +48,19 @@ jobs:
       - name: Configure
         run: |
           CC="${LLVM_PREFIX}/bin/clang" CXX="${LLVM_PREFIX}/bin/clang++"  \
-          cmake -S mimir -B mimir/build                            \
+          cmake -S ${{github.workspace}}/mimir -B ${{github.workspace}}/mimir/build                            \
                 -DCMAKE_BUILD_TYPE=${{matrix.build-type}}                 \
                 -DBUILD_TESTING=ON                                        \
                 -DMIM_BUILD_EXAMPLES=ON                                   \
                 -DMIM_FILECHECK=${LLVM_PREFIX}/bin/FileCheck              \
                 -DMIM_LIT_TIMEOUT=300                                     \
-                -DPython3_EXECUTABLE=mimir/.venv/bin/python3
+                -DPython3_EXECUTABLE=${{github.workspace}}/mimir/.venv/bin/python3
 
       - name: Build
-        run: cmake --build mimir/build -v
+        run: cmake --build ${{github.workspace}}/mimir/build -v
 
       - name: Test
-        working-directory: mimir/build
+        working-directory: ${{github.workspace}}/mimir/build
         run: |
-          export PATH=mimir/bin:$PATH
-          cmake --build mimir/build -v --target test-all
+          export PATH=${{github.workspace}}/mimir/bin:$PATH
+          cmake --build ${{github.workspace}}/mimir/build -v --target test-all
