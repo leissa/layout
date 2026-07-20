@@ -13,6 +13,10 @@ jobs:
       matrix:
         build-type: [Debug, Release]
 
+    defaults:
+      run:
+        working-directory: ${{github.workspace}}/mimir
+
     steps:
       - name: Clone recursively
         uses: actions/checkout@v4
