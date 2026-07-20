@@ -1,0 +1,96 @@
+name: windows
+
+on:
+  push:
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-and-test:
+    name: Build and test ${{matrix.build-type}} mode
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        build-type: [Debug, Release]
+
+    steps:
+      - name: Clone recursively
+        uses: actions/checkout@v4
+        with:
+          repository: mimir/mimir
+          path: mimir
+          submodules: recursive
+
+      - name: Clone layout plugin
+        uses: actions/checkout@v4
+        with:
+          path: mimir/extra/layout
+
+      - name: Install LIT
+        shell: cmd
+        run: python -m pip install lit psutil
+
+      - name: Install FileCheck
+        uses: i3h/download-release-asset@v1
+        with:
+          owner: fodinabor
+          repo: FileCheckBuild
+          tag: llvmorg-22.1.8
+          file: FileCheck-x86_64-win.exe
+          path: mimir/bin
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The prebuilt FileCheck is a MinGW build and needs libstdc++-6.dll & friends at runtime.
+      # Since the runner image 20260706.237.1 (Git for Windows 2.55), bash no longer has these
+      # DLLs in its PATH, so every lit test piping into FileCheck dies with exit code 127.
+      # Stage the DLLs next to the exe; the application directory always wins the DLL search.
+      - name: Stage MinGW runtime DLLs next to FileCheck
+        shell: pwsh
+        run: |
+          foreach ($dll in 'libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll') {
+              $src = (Get-Command $dll).Source
+              Write-Host "$dll -> $src"
+              Copy-Item $src "mimir\bin\"
+          }
+
+      - name: Verify FileCheck runs from bash
+        shell: bash
+        run: |
+          "$GITHUB_WORKSPACE/bin/FileCheck-x86_64-win.exe" --version
+
+      - name: Configure
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          set CC=cl.exe
+          set CXX=cl.exe
+          python -c "import sys; print(sys.executable)" > tmpPath
+          set /p PYTHON_EXE= < tmpPath
+          cmake -B mimir/build -G Ninja   ^
+                -DCMAKE_BUILD_TYPE=${{matrix.build-type}} ^
+                -DBUILD_TESTING=ON                        ^
+                -DMIM_BUILD_EXAMPLES=ON                   ^
+                -DPython3_EXECUTABLE=%PYTHON_EXE%         ^
+                -DPython_EXECUTABLE=%PYTHON_EXE%          ^
+                -DPYTHON_EXECUTABLE=%PYTHON_EXE%          ^
+                -DMIM_LIT_TIMEOUT=300                     ^
+                -DMIM_FILECHECK=mimir/bin/FileCheck-x86_64-win.exe
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v2.0.9
+        with:
+          version: "21.1.8"
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build mimir/build -v
+
+      - name: Test
+        working-directory: mimir/build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          set PATH=mimir/bin;%PATH%
+          cmake --build mimir/build -v --target test-all

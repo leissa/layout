@@ -1,0 +1,15 @@
+/// # The layout Plugin {#layout}
+///
+/// @see mim::plug::layout
+///
+/// A minimal layout plugin.
+///
+/// [TOC]
+///
+/// ## Operations
+///
+/// ### %%layout.const_idx
+///
+/// The constant `42`, evaluated by a normalizer.
+///
+axm %layout.const_idx: [n: Nat] → Idx n, normalize_const;
